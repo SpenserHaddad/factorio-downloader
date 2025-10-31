@@ -1,0 +1,23 @@
+.vscode/
+
+# dotenv file
+.env
+
+# Downloads and helpers
+*.tmp
+osx.dmg
+win64-manual.zip
+win64.exe
+linux64.tar.gz
+downloaded_version.txt
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
