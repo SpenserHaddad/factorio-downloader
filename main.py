@@ -208,6 +208,7 @@ async def main():
     # Remove version file while we wait, in case one of the tasks fails, so we can
     # tell if the files are in a corrupted state. (TODO: Find checksums?)
     version_file.unlink(missing_ok=True)
+    save_dir.mkdir(exist_ok=True)
 
     with progress as progress:
         async with aiohttp.ClientSession() as session, asyncio.TaskGroup() as tg:
