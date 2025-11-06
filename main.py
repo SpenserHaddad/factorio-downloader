@@ -33,7 +33,7 @@ LATEST_RELEASE_URL = "https://factorio.com/api/latest-releases"
 DOWNLOAD_URL_TEMPLATE = (
     "https://www.factorio.com/get-download/{version}/{build}/{distro}"
 )
-DOWNLOADED_VERSION_FILE: Final[Path] = Path(__file__).parent / "downloaded_version.txt"
+DOWNLOADED_VERSION_FILE: Final[str] = "version.txt"
 
 
 class FactorioBuild(StrEnum):
@@ -86,20 +86,11 @@ async def get_latest_version(
     return FactorioVersion.from_str(version_str)
 
 
-def get_downloaded_version() -> FactorioVersion | None:
-    version_file = DOWNLOADED_VERSION_FILE
+def get_downloaded_version(version_file: Path) -> FactorioVersion | None:
     if not version_file.is_file():
         return None
     version_str = version_file.read_text().split()[0].strip()
     return FactorioVersion.from_str(version_str)
-
-
-async def can_update() -> bool:
-    downloaded_version = get_downloaded_version()
-    if downloaded_version is None:
-        return False
-    latest_version = await get_latest_version()
-    return latest_version > downloaded_version
 
 
 async def main():
@@ -180,7 +171,8 @@ async def main():
     if download_dir is None:
         download_dir = save_dir
 
-    downloaded_version: FactorioVersion | None = get_downloaded_version()
+    version_file = save_dir / DOWNLOADED_VERSION_FILE
+    downloaded_version: FactorioVersion | None = get_downloaded_version(version_file)
     # No downloaded version means either our last DL was corrupted or it's our first run
     if downloaded_version is not None:
         if requested_version == "latest":
@@ -213,9 +205,9 @@ async def main():
         TimeRemainingColumn(),
     )
 
-    # Remove downloaded file while we wait, in case one of the tasks fails, so we can
+    # Remove version file while we wait, in case one of the tasks fails, so we can
     # tell if the files are in a corrupted state. (TODO: Find checksums?)
-    DOWNLOADED_VERSION_FILE.unlink(missing_ok=True)
+    version_file.unlink(missing_ok=True)
 
     with progress as progress:
         async with aiohttp.ClientSession() as session, asyncio.TaskGroup() as tg:
@@ -254,7 +246,7 @@ async def main():
 
             for distro in distros:
                 tg.create_task(download(distro))
-    DOWNLOADED_VERSION_FILE.write_text(
+    version_file.write_text(
         f"{downloaded_version if downloaded_version else requested_version}\n"
     )
 
