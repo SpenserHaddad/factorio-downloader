@@ -1,21 +1,31 @@
 [project]
-name = "factorio-dl"
-version = "0.1.0"
-description = "Add your description here"
+name = "factorio-downloader"
+version = "0.0.1"
+description = "Command-line utility for downloading Factorio from the official servers"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.13.1",
     "beautifulsoup4>=4.14.2",
+    "python-dateutil>=2.9.0.post0",
     "python-dotenv>=1.1.1",
     "requests>=2.32.5",
     "rich>=14.2.0",
 ]
 
+[project.scripts]
+fdl = "factorio_downloader.__main__:main_sync"
+
 [dependency-groups]
 dev = [
     "basedpyright>=1.32.0",
     "mypy>=1.18.2",
+    "nuitka[onefile]>=4.0.7",
     "ruff>=0.14.1",
+    "ty>=0.0.8",
     "types-requests>=2.32.4.20250913",
 ]
+
+[build-system]
+requires = ["uv_build<0.12"]
+build-backend = "uv_build"

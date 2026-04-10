@@ -7,14 +7,18 @@ Mostly taken from https://wiki.factorio.com/Download_API and https://artentus.gi
 
 import argparse
 import asyncio
+import datetime
+import json
 import os
 import sys
 import textwrap
 from enum import StrEnum
+from importlib.metadata import version
 from pathlib import Path
 from typing import Final, Literal, NamedTuple, cast
 
 import aiohttp
+from dateutil import parser
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.progress import (
@@ -33,7 +37,7 @@ LATEST_RELEASE_URL = "https://factorio.com/api/latest-releases"
 DOWNLOAD_URL_TEMPLATE = (
     "https://www.factorio.com/get-download/{version}/{build}/{distro}"
 )
-DOWNLOADED_VERSION_FILE: Final[str] = "version.txt"
+MANIFEST_FILE: Final[str] = "manifest.json"
 
 
 class FactorioBuild(StrEnum):
@@ -50,22 +54,44 @@ class FactorioDistro(StrEnum):
     LINUX64 = "linux64"
 
 
-class FactorioVersion(NamedTuple):
+class SemVer(NamedTuple):
     major: int
     minor: int
     patch: int
 
-    @staticmethod
-    def from_str(s: str) -> "FactorioVersion":
-        version_list: list[int] = [int(v) for v in s.split(".")]
-        if len(version_list) != 3:
-            raise ValueError(f'Incorrect number of version values in version: "{s}"')
-        return FactorioVersion(
-            major=version_list[0], minor=version_list[1], patch=version_list[2]
-        )
-
     def __str__(self) -> str:
         return f"{self.major}.{self.minor}.{self.patch}"
+
+    @staticmethod
+    def from_str(semver_str: str) -> "SemVer":
+        fields = semver_str.split(".")
+        if len(fields) != 3:
+            raise ValueError(
+                "semver_str should be a string in format <major>.<minor>.<patch>"
+            )
+        fields_int = [int(f) for f in fields]
+        return SemVer(major=fields_int[0], minor=fields_int[1], patch=fields_int[2])
+
+
+class DownloadManifest(NamedTuple):
+    download_version: SemVer
+    download_date: datetime.datetime
+    fdl_version: SemVer
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "download_version": str(self.download_version),
+            "download_date": self.download_date.isoformat(),
+            "fdl_version": str(self.fdl_version),
+        }
+
+    @staticmethod
+    def from_json(data: dict[str, str]) -> "DownloadManifest":
+        return DownloadManifest(
+            download_version=SemVer.from_str(data["download_version"]),
+            download_date=parser.parse(data["download_date"]),
+            fdl_version=SemVer.from_str(data["fdl_version"]),
+        )
 
 
 EXTENSION_FOR_DISTRO = {
@@ -78,19 +104,19 @@ EXTENSION_FOR_DISTRO = {
 
 async def get_latest_version(
     build: FactorioBuild = FactorioBuild.EXPANSION,
-) -> FactorioVersion:
+) -> SemVer:
     async with aiohttp.ClientSession() as s:
         resp = await s.get(LATEST_RELEASE_URL)
         version_info = await resp.json()
     version_str = cast(str, version_info["stable"][build.value])
-    return FactorioVersion.from_str(version_str)
+    return SemVer.from_str(version_str)
 
 
-def get_downloaded_version(version_file: Path) -> FactorioVersion | None:
+def get_downloaded_version(version_file: Path) -> SemVer | None:
     if not version_file.is_file():
         return None
     version_str = version_file.read_text().split()[0].strip()
-    return FactorioVersion.from_str(version_str)
+    return SemVer.from_str(version_str)
 
 
 async def main():
@@ -144,9 +170,12 @@ async def main():
     )
 
     args = parser.parse_args()
+    console = Console()
+    fdl_version = SemVer.from_str(version("factorio-downloader"))
+    run_time = datetime.datetime.now(datetime.timezone.utc)
+    console.print(f"Running fdl-v{fdl_version} at {run_time}.")
 
     load_dotenv()
-
     try:
         username = os.environ["FACTORIO_USERNAME"]
         token = os.environ["FACTORIO_TOKEN"]
@@ -155,43 +184,40 @@ async def main():
             "The environment variables FACTORIO_USERNAME and FACTORIO_TOKEN must be defined, optionally in a .env file."
         ) from ke
 
-    console = Console()
-
     build = cast(FactorioBuild, args.build)
     distros = cast(list[FactorioDistro], args.distro)
     version_str = cast(str, args.version)
-    requested_version: Literal["latest"] | FactorioVersion
+    requested_version: Literal["latest"] | SemVer
     if version_str == "latest" or version_str is None:
         requested_version = "latest"
     else:
-        requested_version = FactorioVersion.from_str(version_str)
+        requested_version = SemVer.from_str(version_str)
 
     save_dir = cast(Path, args.outdir)
     download_dir = cast(Path | None, args.tempdir)
     if download_dir is None:
         download_dir = save_dir
 
-    version_file = save_dir / DOWNLOADED_VERSION_FILE
-    downloaded_version: FactorioVersion | None = get_downloaded_version(version_file)
+    manifest_file = save_dir / MANIFEST_FILE
+    downloaded_version: SemVer | None = None
+    if manifest_file.is_file():
+        manifest_file_raw = json.loads((save_dir / MANIFEST_FILE).read_text())
+        manifest = DownloadManifest.from_json(manifest_file_raw)
+        downloaded_version = manifest.download_version
+    else:
+        downloaded_version = None
+
+    if requested_version == "latest":
+        download_version: SemVer = await get_latest_version(build=build)
+        console.print(f"Latest version requested, downloading {download_version}.")
+    else:
+        download_version = requested_version
+
     # No downloaded version means either our last DL was corrupted or it's our first run
     if downloaded_version is not None:
-        if requested_version == "latest":
-            latest_version: FactorioVersion = await get_latest_version(build=build)
-            if latest_version == downloaded_version:
-                console.print(
-                    f"Latest version {latest_version} is already downloaded, nothing to do.",
-                    style="blue",
-                )
-                sys.exit(0)
-            elif latest_version < downloaded_version:
-                console.print(
-                    "Latest version is older than the downloaded version, wtf?",
-                    style="red bold",
-                )
-                sys.exit(-10)
-        elif downloaded_version == requested_version:
+        if download_version == downloaded_version:
             console.print(
-                f"Requested version {requested_version} is already downloaded, nothing to do.",
+                f"Version {download_version} is already downloaded, nothing to do.",
                 style="blue",
             )
             sys.exit(0)
@@ -207,7 +233,7 @@ async def main():
 
     # Remove version file while we wait, in case one of the tasks fails, so we can
     # tell if the files are in a corrupted state. (TODO: Find checksums?)
-    version_file.unlink(missing_ok=True)
+    manifest_file.unlink(missing_ok=True)
     save_dir.mkdir(exist_ok=True)
 
     with progress as progress:
@@ -216,7 +242,7 @@ async def main():
             async def download(distro: FactorioDistro):
                 nonlocal build
                 download_url = DOWNLOAD_URL_TEMPLATE.format(
-                    version=requested_version, build=build.value, distro=distro.value
+                    version=download_version, build=build.value, distro=distro.value
                 )
 
                 save_file = save_dir / f"{distro.value}.{EXTENSION_FOR_DISTRO[distro]}"
@@ -224,7 +250,7 @@ async def main():
 
                 download_file.unlink(missing_ok=True)
                 download_task = progress.add_task(
-                    f"Downloading {requested_version}/{build}/{distro}"
+                    f"Downloading {download_version}/{build}/{distro}"
                 )
 
                 async with session.get(
@@ -242,15 +268,19 @@ async def main():
                     download_file.rename(save_file)
                     progress.update(
                         download_task,
-                        description=f"Saved {requested_version}/{build}/{distro} to {save_file}",
+                        description=f"Saved {download_version}/{build}/{distro} to {save_file}",
                     )
 
             for distro in distros:
                 tg.create_task(download(distro))
-    version_file.write_text(
-        f"{downloaded_version if downloaded_version else requested_version}\n"
-    )
+
+    updated_manifest = DownloadManifest(download_version, run_time, fdl_version)
+    manifest_file.write_text(json.dumps(updated_manifest.to_json()))
+
+
+def main_sync():
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main_sync()
