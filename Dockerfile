@@ -12,4 +12,7 @@ RUN echo "* 18 * * 1 uv run --directory /factorio-downloader python -m factorio_
 RUN chmod 0644 /etc/cron.d/factorio-dl && crontab /etc/cron.d/factorio-dl
 RUN mkdir /downloaded && touch /downloaded/factorio-dl.log
 
-CMD ["crond", "&&", "tail", "-f", "/var/log/cron.log"]
+COPY docker-start.sh /docker-start.sh
+RUN chmod +x /docker-start.sh
+
+CMD ["/docker-start.sh"]
