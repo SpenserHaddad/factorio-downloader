@@ -17,6 +17,7 @@ run:
         -v $(realpath fdl/):/downloaded \
         -e FACTORIO_USERNAME=$FACTORIO_USERNAME \
         -e FACTORIO_TOKEN=$FACTORIO_TOKEN \
+        -e FDL_CRON_SCHEDULE="*/5 * * * *" \
         {{image_name}}
 
 export_image:
