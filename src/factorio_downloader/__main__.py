@@ -7,6 +7,8 @@ Mostly taken from https://wiki.factorio.com/Download_API and https://artentus.gi
 
 import argparse
 import asyncio
+import logging
+import logging.handlers
 import datetime
 import json
 import os
@@ -21,6 +23,7 @@ import aiohttp
 from dateutil import parser
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.logging import RichHandler
 from rich.progress import (
     BarColumn,
     DownloadColumn,
@@ -168,12 +171,39 @@ async def main():
         type=Path,
         help="The directory to download the files to before saving. Defaults to '--outdir'.",
     )
+    parser.add_argument(
+        "--logfile",
+        type=Path,
+        default=None,
+        help="The optional file to log output to.",
+    )
+    parser.add_argument("--quiet", "-q", action="store_true", help="Disable output.")
 
     args = parser.parse_args()
-    console = Console()
+    console = Console(quiet=args.quiet)
     fdl_version = SemVer.from_str(version("factorio-downloader"))
     run_time = datetime.datetime.now(datetime.timezone.utc)
-    console.print(f"Running fdl-v{fdl_version} at {run_time}.")
+
+    logger = logging.getLogger("factorio-downloader")
+    logger.setLevel(logging.DEBUG)
+
+    if args.logfile is not None:
+        logger.addHandler(
+            logging.handlers.RotatingFileHandler(
+                args.logfile, backupCount=2, maxBytes=10_000_000
+            )
+        )
+
+    logger.addHandler(
+        RichHandler(
+            console=console,
+            show_time=False,
+            show_level=False,
+            show_path=False,
+            markup=True,
+        )
+    )
+    logger.info(f"Running fdl-v{fdl_version} at {run_time}.")
 
     load_dotenv()
     try:
@@ -209,16 +239,16 @@ async def main():
 
     if requested_version == "latest":
         download_version: SemVer = await get_latest_version(build=build)
-        console.print(f"Latest version requested, downloading {download_version}.")
+        logger.info(f"Latest version requested, downloading {download_version}.")
     else:
         download_version = requested_version
 
     # No downloaded version means either our last DL was corrupted or it's our first run
     if downloaded_version is not None:
         if download_version == downloaded_version:
-            console.print(
+            logger.info(
                 f"Version {download_version} is already downloaded, nothing to do.",
-                style="blue",
+                extra={"style": "blue"},
             )
             sys.exit(0)
 
@@ -252,7 +282,6 @@ async def main():
                 download_task = progress.add_task(
                     f"Downloading {download_version}/{build}/{distro}"
                 )
-
                 async with session.get(
                     download_url, params={"username": username, "token": token}
                 ) as download_resp:
