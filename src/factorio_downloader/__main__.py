@@ -42,6 +42,8 @@ DOWNLOAD_URL_TEMPLATE = (
 )
 MANIFEST_FILE: Final[str] = "manifest.json"
 
+_logger = logging.getLogger("factorio-downloader")
+
 
 class FactorioBuild(StrEnum):
     ALPHA = "alpha"
@@ -122,88 +124,17 @@ def get_downloaded_version(version_file: Path) -> SemVer | None:
     return SemVer.from_str(version_str)
 
 
-async def main():
-    cmd_description = (
-        "Download Factorio binaries from the official site.\n\n"
-        "You must set your Factorio username and token (see Token on "
-        "https://factorio.com/profile) and set them as the environment variables "
-        "FACTORIO_USERNAME and FACTORIO_TOKEN, respectively. These can be provided "
-        "as a .env file."
-    )
-    parser = argparse.ArgumentParser(
-        description="\n".join(textwrap.wrap(cmd_description, width=70))
-    )
-    parser.add_argument(
-        "--build",
-        "-b",
-        default=FactorioBuild.EXPANSION,
-        choices=[b.value for b in FactorioBuild],
-        type=FactorioBuild,
-        help="The build of the game to download. Defaults to 'expansion', which includes Space Age.",
-    )
-    parser.add_argument(
-        "--version",
-        "-v",
-        default="latest",
-        help="The version of the game to download. Must either be a version triple (e.g. 2.0.10) or the word 'latest'.",
-    )
-    parser.add_argument(
-        "--distro",
-        "-d",
-        action="append",
-        default=[d for d in FactorioDistro],
-        type=FactorioDistro,
-        help=(
-            "The platform(s) to download executables for. May be provided multiple "
-            "times. Defaults to all available platforms."
-        ),
-    )
-    parser.add_argument(
-        "--outdir",
-        "-o",
-        type=Path,
-        default=Path.cwd(),
-        help="The directory to save the files into. Defaults to the cwd.",
-    )
-    parser.add_argument(
-        "--tempdir",
-        "-t",
-        type=Path,
-        help="The directory to download the files to before saving. Defaults to '--outdir'.",
-    )
-    parser.add_argument(
-        "--logfile",
-        type=Path,
-        default=None,
-        help="The optional file to log output to.",
-    )
-    parser.add_argument("--quiet", "-q", action="store_true", help="Disable output.")
-
-    args = parser.parse_args()
-    console = Console(quiet=args.quiet)
+async def _run(
+    build: FactorioBuild,
+    factorio_version: str,
+    distro: FactorioDistro,
+    save_dir: Path,
+    download_dir: Path | None,
+    console: Console,
+):
     fdl_version = SemVer.from_str(version("factorio-downloader"))
     run_time = datetime.datetime.now(datetime.timezone.utc)
-
-    logger = logging.getLogger("factorio-downloader")
-    logger.setLevel(logging.DEBUG)
-
-    if args.logfile is not None:
-        logger.addHandler(
-            logging.handlers.RotatingFileHandler(
-                args.logfile, backupCount=2, maxBytes=10_000_000
-            )
-        )
-
-    logger.addHandler(
-        RichHandler(
-            console=console,
-            show_time=False,
-            show_level=False,
-            show_path=False,
-            markup=True,
-        )
-    )
-    logger.info(f"Running fdl-v{fdl_version} at {run_time}.")
+    _logger.info(f"Running fdl-v{fdl_version} at {run_time}.")
 
     load_dotenv()
     try:
@@ -214,17 +145,14 @@ async def main():
             "The environment variables FACTORIO_USERNAME and FACTORIO_TOKEN must be defined, optionally in a .env file."
         ) from ke
 
-    build = cast(FactorioBuild, args.build)
-    distros = cast(list[FactorioDistro], args.distro)
-    version_str = cast(str, args.version)
+    distros = cast(list[FactorioDistro], distro)
+    version_str = factorio_version
     requested_version: Literal["latest"] | SemVer
     if version_str == "latest" or version_str is None:
         requested_version = "latest"
     else:
         requested_version = SemVer.from_str(version_str)
 
-    save_dir = cast(Path, args.outdir)
-    download_dir = cast(Path | None, args.tempdir)
     if download_dir is None:
         download_dir = save_dir
 
@@ -239,14 +167,14 @@ async def main():
 
     if requested_version == "latest":
         download_version: SemVer = await get_latest_version(build=build)
-        logger.info(f"Latest version requested, downloading {download_version}.")
+        _logger.info(f"Latest version requested, downloading {download_version}.")
     else:
         download_version = requested_version
 
     # No downloaded version means either our last DL was corrupted or it's our first run
     if downloaded_version is not None:
         if download_version == downloaded_version:
-            logger.info(
+            _logger.info(
                 f"Version {download_version} is already downloaded, nothing to do.",
                 extra={"style": "blue"},
             )
@@ -307,9 +235,101 @@ async def main():
     manifest_file.write_text(json.dumps(updated_manifest.to_json()))
 
 
-def main_sync():
-    asyncio.run(main())
+def main():
+    cmd_description = (
+        "Download Factorio binaries from the official site.\n\n"
+        "You must set your Factorio username and token (see Token on "
+        "https://factorio.com/profile) and set them as the environment variables "
+        "FACTORIO_USERNAME and FACTORIO_TOKEN, respectively. These can be provided "
+        "as a .env file."
+    )
+    parser = argparse.ArgumentParser(
+        description="\n".join(textwrap.wrap(cmd_description, width=70))
+    )
+    parser.add_argument(
+        "--build",
+        "-b",
+        default=FactorioBuild.EXPANSION,
+        choices=[b.value for b in FactorioBuild],
+        type=FactorioBuild,
+        help="The build of the game to download. Defaults to 'expansion', which includes Space Age.",
+    )
+    parser.add_argument(
+        "--version",
+        "-v",
+        default="latest",
+        help="The version of the game to download. Must either be a version triple (e.g. 2.0.10) or the word 'latest'.",
+    )
+    parser.add_argument(
+        "--distro",
+        "-d",
+        action="append",
+        default=[d for d in FactorioDistro],
+        type=FactorioDistro,
+        help=(
+            "The platform(s) to download executables for. May be provided multiple "
+            "times. Defaults to all available platforms."
+        ),
+    )
+    parser.add_argument(
+        "--outdir",
+        "-o",
+        type=Path,
+        default=Path.cwd(),
+        help="The directory to save the files into. Defaults to the cwd.",
+    )
+    parser.add_argument(
+        "--tempdir",
+        "-t",
+        type=Path,
+        help="The directory to download the files to before saving. Defaults to '--outdir'.",
+    )
+    parser.add_argument(
+        "--logfile",
+        type=Path,
+        default=None,
+        help="The optional file to log output to.",
+    )
+    parser.add_argument("--quiet", "-q", action="store_true", help="Disable output.")
+
+    args = parser.parse_args()
+
+    logger = logging.getLogger("factorio-downloader")
+    logger.setLevel(logging.DEBUG)
+
+    if args.logfile is not None:
+        logger.addHandler(
+            logging.handlers.RotatingFileHandler(
+                args.logfile, backupCount=2, maxBytes=10_000_000
+            )
+        )
+
+    console = Console(quiet=args.quiet)
+    logger.addHandler(
+        RichHandler(
+            console=console,
+            show_time=False,
+            show_level=False,
+            show_path=False,
+            markup=True,
+        )
+    )
+
+    try:
+        asyncio.run(
+            _run(
+                args.build,
+                args.version,
+                args.distro,
+                args.outdir,
+                args.tempdir,
+                console,
+            )
+        )
+    except Exception:
+        _logger.exception("Failed to download")
+        raise
 
 
 if __name__ == "__main__":
-    main_sync()
+    main()

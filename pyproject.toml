@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-fdl = "factorio_downloader.__main__:main_sync"
+fdl = "factorio_downloader.__main__:main"
 
 [dependency-groups]
 dev = [
