@@ -21,6 +21,7 @@ run:
         {{image_name}}
 
 export_image:
+    mkdir -p build/
     docker save -o build/{{image_name}}.tar.gz {{image_name}}
 
 shiv:
