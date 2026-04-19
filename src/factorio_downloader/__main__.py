@@ -8,6 +8,7 @@ Mostly taken from https://wiki.factorio.com/Download_API and https://artentus.gi
 import argparse
 import asyncio
 import datetime
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -33,6 +34,8 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
+
+from factorio_downloader.checksums import download_checksums
 
 LOGIN_URL = "https://www.factorio.com/login"
 LATEST_RELEASE_URL = "https://factorio.com/api/latest-releases"
@@ -194,6 +197,7 @@ async def _run(
 
     with progress as progress:
         async with aiohttp.ClientSession() as session, asyncio.TaskGroup() as tg:
+            checksums = await download_checksums(session=session)
 
             async def download(distro: FactorioDistro):
                 nonlocal build
@@ -201,10 +205,6 @@ async def _run(
                     version=download_version, build=build.value, distro=distro.value
                 )
 
-                save_file = save_dir / f"{distro.value}.{EXTENSION_FOR_DISTRO[distro]}"
-                download_file = download_dir / (save_file.name + ".tmp")
-
-                download_file.unlink(missing_ok=True)
                 download_task = progress.add_task(
                     f"Downloading {download_version}/{build}/{distro}"
                 )
@@ -214,17 +214,39 @@ async def _run(
                     download_resp.raise_for_status()
                     total_size = int(download_resp.headers.get("content-length", 0))
                     progress.update(download_task, total=total_size)
-                    with download_file.open("wb") as f:
-                        async for chunk in download_resp.content.iter_chunked(163_840):
-                            f.write(chunk)
-                            progress.update(download_task, advance=len(chunk))
 
-                    save_file.unlink(missing_ok=True)
-                    download_file.rename(save_file)
-                    progress.update(
-                        download_task,
-                        description=f"Saved {download_version}/{build}/{distro} to {save_file}",
-                    )
+                    file_name = download_resp.url.name
+                    save_file = save_dir / file_name
+
+                    if save_file.is_file():
+                        with save_file.open("rb") as f:
+                            save_file_checksum = hashlib.file_digest(
+                                f, "sha256"
+                            ).hexdigest()
+                        expected_checksum = checksums[save_file]
+                        if expected_checksum == save_file_checksum:
+                            progress.update(
+                                download_task,
+                                description=f"Build {download_version}/{build}/{distro} is already saved to {save_file}.",
+                                completed=total_size,
+                            )
+                    else:
+                        download_file = download_dir / (save_file.name + ".tmp")
+                        download_file.unlink(missing_ok=True)
+
+                        with download_file.open("wb") as f:
+                            async for chunk in download_resp.content.iter_chunked(
+                                163_840
+                            ):
+                                f.write(chunk)
+                                progress.update(download_task, advance=len(chunk))
+
+                        save_file.unlink(missing_ok=True)
+                        download_file.rename(save_file)
+                        progress.update(
+                            download_task,
+                            description=f"Saved {download_version}/{build}/{distro} to {save_file}",
+                        )
 
             for distro in distros:
                 tg.create_task(download(distro))
