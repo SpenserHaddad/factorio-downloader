@@ -9,10 +9,14 @@ v:
 
 i:
     @echo {{image_name}}
+
+download:
+    uv run fdl --version latest --outdir downloads
+
 build:
     docker build -t {{image_name}} .
 
-run:
+run_docker:
     docker run \
         -v $(realpath fdl/):/downloaded \
         -e FACTORIO_USERNAME=$FACTORIO_USERNAME \
