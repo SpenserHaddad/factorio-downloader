@@ -7,10 +7,10 @@ Mostly taken from https://wiki.factorio.com/Download_API and https://artentus.gi
 
 import argparse
 import asyncio
-import logging
-import logging.handlers
 import datetime
 import json
+import logging
+import logging.handlers
 import os
 import sys
 import textwrap
@@ -35,7 +35,6 @@ from rich.progress import (
 )
 
 LOGIN_URL = "https://www.factorio.com/login"
-# LOGIN_URL = "https://auth.factorio.com/api-login"
 LATEST_RELEASE_URL = "https://factorio.com/api/latest-releases"
 DOWNLOAD_URL_TEMPLATE = (
     "https://www.factorio.com/get-download/{version}/{build}/{distro}"
@@ -127,7 +126,7 @@ def get_downloaded_version(version_file: Path) -> SemVer | None:
 async def _run(
     build: FactorioBuild,
     factorio_version: str,
-    distro: FactorioDistro,
+    distros: list[FactorioDistro],
     save_dir: Path,
     download_dir: Path | None,
     console: Console,
@@ -145,7 +144,6 @@ async def _run(
             "The environment variables FACTORIO_USERNAME and FACTORIO_TOKEN must be defined, optionally in a .env file."
         ) from ke
 
-    distros = cast(list[FactorioDistro], distro)
     version_str = factorio_version
     requested_version: Literal["latest"] | SemVer
     if version_str == "latest" or version_str is None:
