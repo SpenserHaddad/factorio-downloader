@@ -21,7 +21,7 @@ run:
         {{image_name}}
 
 export_image:
-    docker save -o {{image_name}}.tar.gz {{image_name}}
+    docker save -o build/{{image_name}}.tar.gz {{image_name}}
 
 shiv:
     uv run shiv --entry-point factorio_downloader.__main__:main_sync --output-file fdl.pyz {{packages}}
