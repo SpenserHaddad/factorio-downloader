@@ -8,20 +8,18 @@ Mostly taken from https://wiki.factorio.com/Download_API and https://artentus.gi
 import argparse
 import asyncio
 import datetime
-import hashlib
+import functools
 import json
 import logging
 import logging.handlers
 import os
 import sys
 import textwrap
-from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path
-from typing import Final, Literal, NamedTuple, cast
+from typing import Final, Literal, cast
 
 import aiohttp
-from dateutil import parser
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
@@ -29,84 +27,29 @@ from rich.progress import (
     BarColumn,
     DownloadColumn,
     Progress,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
 
-from factorio_downloader.checksums import download_checksums
-
-LOGIN_URL = "https://www.factorio.com/login"
-LATEST_RELEASE_URL = "https://factorio.com/api/latest-releases"
-DOWNLOAD_URL_TEMPLATE = (
-    "https://www.factorio.com/get-download/{version}/{build}/{distro}"
+from factorio_downloader._urls import LATEST_RELEASE_URL
+from factorio_downloader.download import (
+    DownloadProgressInfo,
+    DownloadProgressUpdate,
+    FactorioDownloader,
 )
+from factorio_downloader.models import (
+    DownloadManifest,
+    FactorioBuild,
+    FactorioDistro,
+    SemVer,
+)
+
 MANIFEST_FILE: Final[str] = "manifest.json"
 
 _logger = logging.getLogger("factorio-downloader")
-
-
-class FactorioBuild(StrEnum):
-    ALPHA = "alpha"
-    EXPANSION = "expansion"
-    DEMO = "demo"
-    HEADLESS = "headless"
-
-
-class FactorioDistro(StrEnum):
-    WIN64 = "win64"
-    WIN64_MANUAL = "win64-manual"
-    OSX = "osx"
-    LINUX64 = "linux64"
-
-
-class SemVer(NamedTuple):
-    major: int
-    minor: int
-    patch: int
-
-    def __str__(self) -> str:
-        return f"{self.major}.{self.minor}.{self.patch}"
-
-    @staticmethod
-    def from_str(semver_str: str) -> "SemVer":
-        fields = semver_str.split(".")
-        if len(fields) != 3:
-            raise ValueError(
-                "semver_str should be a string in format <major>.<minor>.<patch>"
-            )
-        fields_int = [int(f) for f in fields]
-        return SemVer(major=fields_int[0], minor=fields_int[1], patch=fields_int[2])
-
-
-class DownloadManifest(NamedTuple):
-    download_version: SemVer
-    download_date: datetime.datetime
-    fdl_version: SemVer
-
-    def to_json(self) -> dict[str, str]:
-        return {
-            "download_version": str(self.download_version),
-            "download_date": self.download_date.isoformat(),
-            "fdl_version": str(self.fdl_version),
-        }
-
-    @staticmethod
-    def from_json(data: dict[str, str]) -> "DownloadManifest":
-        return DownloadManifest(
-            download_version=SemVer.from_str(data["download_version"]),
-            download_date=parser.parse(data["download_date"]),
-            fdl_version=SemVer.from_str(data["fdl_version"]),
-        )
-
-
-EXTENSION_FOR_DISTRO = {
-    FactorioDistro.WIN64: "exe",
-    FactorioDistro.WIN64_MANUAL: "zip",
-    FactorioDistro.OSX: "dmg",
-    FactorioDistro.LINUX64: "tar.gz",
-}
 
 
 async def get_latest_version(
@@ -160,8 +103,9 @@ async def _run(
     manifest_file = save_dir / MANIFEST_FILE
     downloaded_version: SemVer | None = None
     if manifest_file.is_file():
-        manifest_file_raw = json.loads((save_dir / MANIFEST_FILE).read_text())
-        manifest = DownloadManifest.from_json(manifest_file_raw)
+        manifest = DownloadManifest.model_validate_json(
+            (save_dir / MANIFEST_FILE).read_text()
+        )
         downloaded_version = manifest.download_version
     else:
         downloaded_version = None
@@ -196,63 +140,58 @@ async def _run(
     save_dir.mkdir(exist_ok=True)
 
     with progress as progress:
+
+        def progress_update(
+            task_id: TaskID,
+            update_type: DownloadProgressUpdate,
+            data: DownloadProgressInfo,
+        ):
+            match update_type:
+                case DownloadProgressUpdate.GOT_FILE_SIZE:
+                    progress.update(
+                        task_id,
+                        description=f"Downloading {data.version}/{data.build}/{data.distro}",
+                        total=data.total_size,
+                    )
+                case DownloadProgressUpdate.DOWNLOADED_CHUNK:
+                    progress.update(task_id, completed=data.downloaded)
+                case DownloadProgressUpdate.FILE_ALREADY_DOWNLOADED:
+                    description = f"Build {data.version}/{data.build}/{data.distro} is already saved to {data.save_file}."
+                    progress.update(
+                        task_id, description=description, completed=data.total_size
+                    )
+                case DownloadProgressUpdate.COMPLETED:
+                    final_description = f"Saved {data.version}/{data.build}/{data.distro} to {data.save_file}"
+                    progress.update(
+                        task_id, completed=1.0, description=final_description
+                    )
+
         async with aiohttp.ClientSession() as session, asyncio.TaskGroup() as tg:
-            checksums = await download_checksums(session=session)
-
-            async def download(distro: FactorioDistro):
-                nonlocal build
-                download_url = DOWNLOAD_URL_TEMPLATE.format(
-                    version=download_version, build=build.value, distro=distro.value
-                )
-
-                download_task = progress.add_task(
-                    f"Downloading {download_version}/{build}/{distro}"
-                )
-                async with session.get(
-                    download_url, params={"username": username, "token": token}
-                ) as download_resp:
-                    download_resp.raise_for_status()
-                    total_size = int(download_resp.headers.get("content-length", 0))
-                    progress.update(download_task, total=total_size)
-
-                    file_name = download_resp.url.name
-                    save_file = save_dir / file_name
-
-                    if save_file.is_file():
-                        with save_file.open("rb") as f:
-                            save_file_checksum = hashlib.file_digest(
-                                f, "sha256"
-                            ).hexdigest()
-                        expected_checksum = checksums[save_file]
-                        if expected_checksum == save_file_checksum:
-                            progress.update(
-                                download_task,
-                                description=f"Build {download_version}/{build}/{distro} is already saved to {save_file}.",
-                                completed=total_size,
-                            )
-                    else:
-                        download_file = download_dir / (save_file.name + ".tmp")
-                        download_file.unlink(missing_ok=True)
-
-                        with download_file.open("wb") as f:
-                            async for chunk in download_resp.content.iter_chunked(
-                                163_840
-                            ):
-                                f.write(chunk)
-                                progress.update(download_task, advance=len(chunk))
-
-                        save_file.unlink(missing_ok=True)
-                        download_file.rename(save_file)
-                        progress.update(
-                            download_task,
-                            description=f"Saved {download_version}/{build}/{distro} to {save_file}",
-                        )
+            downloader = FactorioDownloader(
+                username, token, save_dir, download_dir=download_dir, session=session
+            )
 
             for distro in distros:
-                tg.create_task(download(distro))
+                task = progress.add_task(
+                    f"Downloading {download_version}/{build}/{distro}"
+                )
+                progress_callback = functools.partial(progress_update, task)
+                tg.create_task(
+                    downloader.download(
+                        distro,
+                        download_version,
+                        build,
+                        progress_callback=progress_callback,
+                    )
+                )
 
-    updated_manifest = DownloadManifest(download_version, run_time, fdl_version)
-    manifest_file.write_text(json.dumps(updated_manifest.to_json()))
+    updated_manifest = DownloadManifest(
+        download_version=download_version,
+        download_date=run_time,
+        fdl_version=fdl_version,
+        files=[],
+    )
+    manifest_file.write_text(json.dumps(updated_manifest.model_dump_json()))
 
 
 def main():
