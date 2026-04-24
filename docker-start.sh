@@ -10,4 +10,4 @@ echo "${CRON_SCHEDULE} uv run --directory /factorio-downloader python -m factori
 chmod 0644 /etc/cron.d/factorio-dl && crontab /etc/cron.d/factorio-dl
 mkdir -p /downloaded
 
-crond -f
+crond -S
