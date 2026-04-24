@@ -74,6 +74,7 @@ class FactorioDownloader:
 
     async def __aenter__(self):
         await self.setup()
+        return self
 
     async def __aexit__(self, exc_type, exc, tb):
         if self._manual_session and self._session is not None:
@@ -88,7 +89,7 @@ class FactorioDownloader:
             [DownloadProgressUpdate, DownloadProgressInfo], None
         ]
         | None = None,
-    ):
+    ) -> Path:
         download_url = DOWNLOAD_URL_TEMPLATE.format(
             version=version, build=build.value, distro=distro.value
         )
@@ -117,8 +118,8 @@ class FactorioDownloader:
             # FILE_MISSING or INVALID_CHECKSUM both mean we should (re)download the file.
             if file_check_result == FileCheckResult.VALID:
                 trigger_callback(DownloadProgressUpdate.FILE_ALREADY_DOWNLOADED)
-                return
-            elif file_check_result == FileCheckResult.FILE_MISSING:
+                return save_file
+            elif file_check_result == FileCheckResult.INVALID_FILE_NAME:
                 msg = f"Wanted to save file to {file_check_result}, but it's not a valid Factorio file."
                 raise RuntimeError(msg)
 
@@ -135,3 +136,4 @@ class FactorioDownloader:
             save_file.unlink(missing_ok=True)
             download_file.rename(save_file)
             trigger_callback(DownloadProgressUpdate.COMPLETED)
+        return download_file

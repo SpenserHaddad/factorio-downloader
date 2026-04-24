@@ -102,12 +102,12 @@ async def _run(
 
     manifest_file = save_dir / MANIFEST_FILE
     downloaded_version: SemVer | None = None
-    if manifest_file.is_file():
+    try:
         manifest = DownloadManifest.model_validate_json(
             (save_dir / MANIFEST_FILE).read_text()
         )
         downloaded_version = manifest.download_version
-    else:
+    except Exception:
         downloaded_version = None
 
     if requested_version == "latest":
@@ -156,27 +156,32 @@ async def _run(
                 case DownloadProgressUpdate.DOWNLOADED_CHUNK:
                     progress.update(task_id, completed=data.downloaded)
                 case DownloadProgressUpdate.FILE_ALREADY_DOWNLOADED:
-                    description = f"Build {data.version}/{data.build}/{data.distro} is already saved to {data.save_file}."
+                    description = f"{data.version}/{data.build}/{data.distro} is already downloaded."
                     progress.update(
                         task_id, description=description, completed=data.total_size
                     )
                 case DownloadProgressUpdate.COMPLETED:
-                    final_description = f"Saved {data.version}/{data.build}/{data.distro} to {data.save_file}"
+                    final_description = "{data.distro} download complete!"
                     progress.update(
-                        task_id, completed=1.0, description=final_description
+                        task_id,
+                        completed=data.total_size,
+                        description=final_description,
                     )
 
-        async with aiohttp.ClientSession() as session, asyncio.TaskGroup() as tg:
-            downloader = FactorioDownloader(
+        async with (
+            aiohttp.ClientSession() as session,
+            asyncio.TaskGroup() as tg,
+            FactorioDownloader(
                 username, token, save_dir, download_dir=download_dir, session=session
-            )
-
+            ) as downloader,
+        ):
+            download_tasks: dict[FactorioDistro, asyncio.Task[Path]] = {}
             for distro in distros:
                 task = progress.add_task(
                     f"Downloading {download_version}/{build}/{distro}"
                 )
                 progress_callback = functools.partial(progress_update, task)
-                tg.create_task(
+                download_tasks[distro] = tg.create_task(
                     downloader.download(
                         distro,
                         download_version,
@@ -184,6 +189,9 @@ async def _run(
                         progress_callback=progress_callback,
                     )
                 )
+    for distro, task in download_tasks.items():
+        save_file = task.result()
+        console.print(f"Saved {download_version}/{build}/{distro} to {save_file}.")
 
     updated_manifest = DownloadManifest(
         download_version=download_version,
